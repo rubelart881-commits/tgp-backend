@@ -1,194 +1,172 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from supabase import create_client, Client
-import datetime
-import requests # পেমেন্ট রিকোয়েস্ট পাঠানোর জন্য
-import hmac     # সিকিউরিটি চেকের জন্য
-import hashlib  # সিকিউরিটি চেকের জন্য
-import json
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TGP Admin Panel</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root { --primary: #6366f1; --bg: #f3f4f6; --white: #ffffff; --text: #1f2937; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Hind Siliguri', sans-serif; }
+        body { background: var(--bg); display: flex; min-height: 100vh; }
+        .sidebar { width: 260px; background: var(--white); height: 100vh; position: fixed; border-right: 1px solid #e5e7eb; z-index: 1000; }
+        .brand { font-size: 24px; font-weight: 700; color: var(--primary); padding: 25px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #f3f4f6; }
+        .menu { padding: 20px; }
+        .menu-item { display: flex; align-items: center; padding: 14px 20px; color: #4b5563; text-decoration: none; margin-bottom: 8px; border-radius: 10px; cursor: pointer; transition: 0.3s; font-weight: 500; }
+        .menu-item:hover, .menu-item.active { background: var(--primary); color: white; }
+        .menu-item i { margin-right: 15px; width: 20px; text-align: center; }
+        .main-content { margin-left: 260px; padding: 30px; width: calc(100% - 260px); }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .card { background: white; padding: 25px; border-radius: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .card h3 { color: #6b7280; font-size: 15px; margin-bottom: 10px; }
+        .card p { font-size: 28px; font-weight: 700; color: var(--text); }
+        .table-container { background: white; padding: 25px; border-radius: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); overflow-x: auto; }
+        table { width: 100%; border-collapse: separate; border-spacing: 0; }
+        th { background: #f9fafb; padding: 16px; text-align: left; border-bottom: 2px solid #e5e7eb; font-weight: 600; }
+        td { padding: 16px; border-bottom: 1px solid #f3f4f6; color: #4b5563; }
+        .status-badge { padding: 6px 12px; border-radius: 50px; font-size: 13px; font-weight: 600; display: inline-block; }
+        .status-active, .status-approved { background: #dcfce7; color: #15803d; }
+        .status-free, .status-pending { background: #fef3c7; color: #b45309; }
+        .status-banned, .status-rejected { background: #fee2e2; color: #b91c1c; }
+        .btn { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; color: white; background: var(--primary); }
+        .btn-success { background: #22c55e; } .btn-danger { background: #ef4444; }
+        .page-section { display: none; } .active-page { display: block; }
+        .student-img { width: 45px; height: 45px; border-radius: 50%; object-fit: cover; }
+    </style>
+</head>
+<body>
 
-app = Flask(__name__)
-CORS(app) 
+    <div class="sidebar">
+        <div class="brand"><i class="fas fa-graduation-cap"></i> TGP Admin</div>
+        <div class="menu">
+            <div class="menu-item active" onclick="showPage('dashboard')"><i class="fas fa-home"></i> ড্যাশবোর্ড</div>
+            <div class="menu-item" onclick="showPage('students')"><i class="fas fa-users"></i> স্টুডেন্ট লিস্ট</div>
+            <div class="menu-item" onclick="showPage('payments')"><i class="fas fa-wallet"></i> পেমেন্ট রিকোয়েস্ট</div>
+            <div class="menu-item" onclick="showPage('settings')"><i class="fas fa-cog"></i> সেটিংস</div>
+        </div>
+    </div>
 
-# --- ১. কনফিগারেশন ---
-# Supabase (তোমার দেওয়া তথ্য)
-SUPABASE_URL = "https://gzgmtofyvfjknoectxgb.supabase.co"
-SUPABASE_KEY = "sb_publishable_gYC68V5SQn6_OxXU2sCbvA_RrRFM0Xt"
-
-# NOWPayments (তোমার দেওয়া নতুন তথ্য)
-NOWPAYMENTS_API_KEY = "KFS8VFW-PNX4AHW-KNT35W5-HS56ESK"
-IPN_SECRET_KEY = "OjSsnNqSiTTiB3o05xP1A19HA4L7lxvL"
-
-# ডাটাবেস কানেকশন
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# --- আগের রাউটগুলো (Student Management) ---
-
-@app.route('/get_students', methods=['GET'])
-def get_students():
-    search_query = request.args.get('search', '')
-    filter_status = request.args.get('status', 'all')
-    query = supabase.table('students').select("*")
-    
-    if search_query:
-        query = query.or_(f"name.ilike.%{search_query}%,phone.ilike.%{search_query}%,email.ilike.%{search_query}%")
-    
-    if filter_status != 'all':
-        query = query.eq('status', filter_status)
+    <div class="main-content">
         
-    response = query.execute()
-    return jsonify(response.data)
+        <!-- ড্যাশবোর্ড -->
+        <div id="dashboard-page" class="page-section active-page">
+            <div class="header"><h2>📊 ব্যবসার অবস্থা</h2><button class="btn" onclick="loadDashboard()"><i class="fas fa-sync"></i> রিফ্রেশ</button></div>
+            <div class="stats-grid">
+                <div class="card"><h3>মোট স্টুডেন্ট</h3><p id="total-users">0</p></div>
+                <div class="card"><h3>ফ্রি ট্রায়াল</h3><p id="free-users">0</p></div>
+                <div class="card"><h3>পেইড মেম্বার</h3><p id="paid-users">0</p></div>
+                <div class="card"><h3>মোট ইনকাম</h3><p style="color: #10b981;">৳ <span id="total-income">0</span></p></div>
+            </div>
+        </div>
 
-@app.route('/add_student', methods=['POST'])
-def add_student():
-    data = request.json
-    trial_end = datetime.date.today() + datetime.timedelta(days=3)
-    
-    new_user = {
-        "name": data.get('name'),
-        "phone": data.get('phone'),
-        "email": data.get('email'),
-        "school_name": data.get('school'),
-        "parent_name": data.get('parent'),
-        "address": data.get('address'),
-        "photo_url": data.get('img_url'),
-        "status": "free_trial",
-        "subscription_end_date": str(trial_end),
-        "referred_by": data.get('ref_code', '')
-    }
-    
-    try:
-        data = supabase.table('students').insert(new_user).execute()
-        return jsonify({"message": "Student Added Successfully!", "data": data.data}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        <!-- স্টুডেন্ট লিস্ট -->
+        <div id="students-page" class="page-section">
+            <div class="header"><h2>👥 সব স্টুডেন্ট</h2><input type="text" id="search-input" placeholder="🔍 খুঁজুন..." onkeyup="searchStudent()" style="padding:10px; border:1px solid #ddd; border-radius:5px;"></div>
+            <div class="table-container">
+                <table>
+                    <thead><tr><th>ছবি</th><th>নাম & ফোন</th><th>স্কুল</th><th>স্ট্যাটাস</th><th>অ্যাকশন</th></tr></thead>
+                    <tbody id="student-table-body"></tbody>
+                </table>
+            </div>
+        </div>
 
-@app.route('/update_status', methods=['POST'])
-def update_status():
-    data = request.json
-    phone = data.get('phone')
-    action = data.get('action') 
-    
-    update_data = {}
-    if action == 'ban':
-        update_data['status'] = 'banned'
-    elif action == 'approve':
-        update_data['status'] = 'active'
-        next_year = datetime.date.today() + datetime.timedelta(days=365)
-        update_data['subscription_end_date'] = str(next_year)
-    elif action == 'free_trial':
-        update_data['status'] = 'free_trial'
-    
-    try:
-        response = supabase.table('students').update(update_data).eq('phone', phone).execute()
-        return jsonify({"message": f"User {action} successful!"})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        <!-- পেমেন্ট পেজ -->
+        <div id="payments-page" class="page-section">
+            <div class="header"><h2>💸 পেমেন্ট হিস্ট্রি</h2><button class="btn" onclick="fetchPayments()"><i class="fas fa-sync"></i> চেক করুন</button></div>
+            <div class="table-container">
+                <table>
+                    <thead><tr><th>ফোন নম্বর</th><th>মেথড</th><th>TRX ID</th><th>পরিমাণ</th><th>স্ট্যাটাস</th></tr></thead>
+                    <tbody id="payment-table-body">
+                        <tr><td colspan="5" style="text-align:center">লোডিং...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
 
-@app.route('/dashboard_stats', methods=['GET'])
-def dashboard_stats():
-    total_students = supabase.table('students').select("*", count='exact').execute().count
-    free_users = supabase.table('students').select("*", count='exact').eq('status', 'free_trial').execute().count
-    paid_users = supabase.table('students').select("*", count='exact').eq('status', 'active').execute().count
-    
-    return jsonify({
-        "total": total_students,
-        "free": free_users,
-        "paid": paid_users,
-        "income": paid_users * 2000 
-    })
+        <!-- সেটিংস পেজ -->
+        <div id="settings-page" class="page-section">
+            <div class="header"><h2>⚙️ সেটিংস</h2></div>
+            <div class="card"><h3>ওয়ালেট কনফিগারেশন</h3><p style="font-size:16px; font-weight:400;">সব পেমেন্ট অটোমেটিক NOWPayments এর মাধ্যমে আপনার Cake Wallet এ জমা হচ্ছে।</p></div>
+        </div>
 
-# --- ৫. নতুন: পেমেন্ট লিংক তৈরি করা (App থেকে কল হবে) ---
-@app.route('/create_payment', methods=['POST'])
-def create_payment():
-    data = request.json
-    phone = data.get('phone') # স্টুডেন্টের ফোন নম্বর
-    
-    # ২,০০০ টাকা = আনুমানিক ১৭ ডলার
-    amount_usd = 17 
+    </div>
 
-    url = "https://api.nowpayments.io/v1/invoice"
-    
-    headers = {
-        'x-api-key': NOWPAYMENTS_API_KEY,
-        'Content-Type': 'application/json'
-    }
-    
-    # পেমেন্ট রিকোয়েস্ট বডি
-    payload = {
-        "price_amount": amount_usd,
-        "price_currency": "usd",
-        "pay_currency": "xmr", # XMR এ পেমেন্ট নিব
-        "order_id": phone,     # ফোন নম্বরটা অর্ডার আইডি হিসেবে যাবে
-        "order_description": "Class 8 Course Fee",
-        # তোমার রেন্ডারেরWebhook লিংক
-        "ipn_callback_url": "https://tgp-backend-ppga.onrender.com/webhook"
-    }
+    <script>
+        // 👇 আপনার রেন্ডার লিংক
+        const API_BASE_URL = "https://tgp-backend-ppga.onrender.com"; 
 
-    try:
-        # NOWPayments API তে কল করা
-        response = requests.post(url, headers=headers, json=payload)
-        payment_data = response.json()
-        
-        # পেমেন্ট তৈরি সফল হলে ডাটাবেসে সেভ করা
-        if 'id' in payment_data:
-            supabase.table('payments').insert({
-                "student_phone": phone,
-                "amount": 2000,
-                "method": "XMR",
-                "trx_id": payment_data['id'],
-                "status": "pending"
-            }).execute()
-            
-            return jsonify(payment_data) # অ্যাপে পেমেন্ট এড্রেস চলে যাবে
-        else:
-            return jsonify({"error": "Payment failed", "details": payment_data}), 400
+        function showPage(pageId) {
+            document.querySelectorAll('.page-section').forEach(el => el.classList.remove('active-page'));
+            document.getElementById(pageId + '-page').classList.add('active-page');
+            document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+            if(pageId === 'students') fetchStudents();
+            if(pageId === 'payments') fetchPayments();
+        }
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        async function loadDashboard() {
+            try {
+                const res = await fetch(`${API_BASE_URL}/dashboard_stats`);
+                const data = await res.json();
+                document.getElementById('total-users').innerText = data.total || 0;
+                document.getElementById('free-users').innerText = data.free || 0;
+                document.getElementById('paid-users').innerText = data.paid || 0;
+                document.getElementById('total-income').innerText = data.income || 0;
+            } catch (e) { console.error(e); }
+        }
 
-# --- ৬. নতুন: অটোমেটিক ভেরিফিকেশন (Webhook) ---
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    # ১. সিকিউরিটি চেক (NOWPayments থেকেই এসেছে কিনা)
-    sig = request.headers.get('x-nowpayments-sig')
-    body = request.get_data()
-    
-    if not sig:
-         return jsonify({"error": "No signature"}), 403
+        async function fetchStudents(query = '') {
+            const tbody = document.getElementById('student-table-body');
+            try {
+                const res = await fetch(`${API_BASE_URL}/get_students?search=${query}`);
+                const students = await res.json();
+                let html = '';
+                students.forEach(std => {
+                    let badge = std.status === 'active' ? 'status-active' : (std.status === 'banned' ? 'status-banned' : 'status-free');
+                    let img = std.photo_url || 'https://cdn-icons-png.flaticon.com/512/3135/3135715.png';
+                    html += `<tr>
+                        <td><img src="${img}" class="student-img"></td>
+                        <td><b>${std.name}</b><br><small>${std.phone}</small></td>
+                        <td>${std.school_name || '-'}</td>
+                        <td><span class="status-badge ${badge}">${std.status}</span></td>
+                        <td><button class="btn-success" onclick="upStatus('${std.phone}','approve')" style="padding:5px; border-radius:4px;"><i class="fas fa-check"></i></button> 
+                            <button class="btn-danger" onclick="upStatus('${std.phone}','ban')" style="padding:5px; border-radius:4px;"><i class="fas fa-ban"></i></button></td>
+                    </tr>`;
+                });
+                tbody.innerHTML = html || '<tr><td colspan="5" align="center">No Data</td></tr>';
+            } catch (e) { tbody.innerHTML = '<tr><td colspan="5" align="center">Error Loading</td></tr>'; }
+        }
 
-    try:
-        hash_object = hmac.new(IPN_SECRET_KEY.encode(), body, hashlib.sha512)
-        expected_sig = hash_object.hexdigest()
-        
-        if sig != expected_sig:
-            return jsonify({"error": "Invalid signature"}), 403
-    except Exception:
-        # স্যান্ডবক্স বা এরর হ্যান্ডলিংয়ের জন্য পাস করে দিচ্ছি
-        pass
+        async function fetchPayments() {
+            const tbody = document.getElementById('payment-table-body');
+            try {
+                const res = await fetch(`${API_BASE_URL}/get_payments`);
+                const payments = await res.json();
+                let html = '';
+                payments.forEach(pay => {
+                    let badge = pay.status === 'approved' ? 'status-approved' : 'status-pending';
+                    html += `<tr>
+                        <td>${pay.student_phone}</td>
+                        <td><span style="color:#f7931a; font-weight:bold;">${pay.method}</span></td>
+                        <td>${pay.trx_id}</td>
+                        <td>৳ ${pay.amount}</td>
+                        <td><span class="status-badge ${badge}">${pay.status.toUpperCase()}</span></td>
+                    </tr>`;
+                });
+                tbody.innerHTML = html || '<tr><td colspan="5" align="center">No Payments Yet</td></tr>';
+            } catch (e) { tbody.innerHTML = '<tr><td colspan="5" align="center">Error Loading</td></tr>'; }
+        }
 
-    # ২. ডাটা প্রসেসিং
-    data = request.json
-    payment_status = data.get('payment_status') # waiting, confirming, finished
-    student_phone = data.get('order_id')
-    payment_id = data.get('payment_id')
+        async function upStatus(phone, action) {
+            if(!confirm("Are you sure?")) return;
+            await fetch(`${API_BASE_URL}/update_status`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({phone, action}) });
+            fetchStudents();
+        }
 
-    print(f"Payment Update for {student_phone}: {payment_status}")
-
-    # ৩. পেমেন্ট যদি কমপ্লিট (finished) হয়
-    if payment_status == 'finished':
-        # পেমেন্ট টেবিলে আপডেট
-        supabase.table('payments').update({"status": "approved"}).eq("trx_id", payment_id).execute()
-        
-        # স্টুডেন্টের সাবস্ক্রিপশন ১ বছরের জন্য চালু
-        next_year = datetime.date.today() + datetime.timedelta(days=365)
-        
-        supabase.table('students').update({
-            "status": "active",
-            "subscription_end_date": str(next_year)
-        }).eq("phone", student_phone).execute()
-
-    return jsonify({"status": "success"}), 200
-
-if __name__ == '__main__':
-    app.run(debug=True)
+        function searchStudent() { fetchStudents(document.getElementById('search-input').value); }
+        loadDashboard();
+    </script>
+</body>
+</html>
